@@ -1,29 +1,42 @@
-"""Async HTTP client for PokeAPI."""
+"""HTTP client for PokeAPI."""
 
 from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Coroutine
+from typing import Any
 
 import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from pokepipeline.extract.models_api import (
-    PokemonAPIModel,
-    SpeciesAPIModel,
-    EvolutionChainAPIModel,
-    TypeRef,
     AbilityRef,
+    PokemonAPIModel,
     StatRef,
+    TypeRef,
 )
 
 BASE_URL = "https://pokeapi.co/api/v2"
 
 
-class PokemonClient:
-    """HTTP client for fetching Pokemon data with rate limiting and retries."""
+def _extract_pokemon_id(url: str) -> int | None:
+    """Extract pokemon ID from URL."""
+    try:
+        parts = url.rstrip("/").split("/")
+        return int(parts[-1])
+    except (ValueError, IndexError):
+        return None
 
+
+def _safe_get(data: dict, *keys: str) -> Any:
+    """Safely get nested dict value."""
+    for key in keys:
+        if not isinstance(data, dict):
+            return None
+        data = data.get(key)
+    return data
+
+
+class PokemonClient:
     def __init__(
         self,
         *,
@@ -39,8 +52,24 @@ class PokemonClient:
         self._lock = asyncio.Lock()
         self._semaphore = asyncio.Semaphore(self.concurrency)
 
-    async def _wait_if_needed(self) -> None:
-        """Enforces minimum time between requests."""
+    async def _get(self, url: str) -> httpx.Response:
+        """Make HTTP GET request with rate limiting and retries."""
+        for attempt in range(3):
+            await self._rate_limit_wait()
+            
+            async with self._semaphore:
+                try:
+                    async with httpx.AsyncClient(timeout=self.timeout) as client:
+                        resp = await client.get(url)
+                        resp.raise_for_status()
+                        return resp
+                except httpx.HTTPError:
+                    if attempt == 2:
+                        raise
+                    await asyncio.sleep(0.5 * (attempt + 1))
+    
+    async def _rate_limit_wait(self) -> None:
+        """Wait to maintain rate limit."""
         async with self._lock:
             now = time.time()
             elapsed = now - self._last_request
@@ -48,102 +77,57 @@ class PokemonClient:
                 await asyncio.sleep(self._min_interval - elapsed)
             self._last_request = time.time()
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=0.5, min=0.5, max=4),
-    )
-    async def _get(self, url: str) -> httpx.Response:
-        """Fetch URL with rate limiting, concurrency control, and automatic retries."""
-        await self._wait_if_needed()
-        async with self._semaphore:
-            async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                return resp
-
     async def fetch_pokemon_ids(self, limit: int, offset: int) -> list[int]:
-        """Fetch Pokemon IDs for pagination."""
+        """Fetch list of pokemon IDs."""
         url = f"{BASE_URL}/pokemon?limit={limit}&offset={offset}"
         resp = await self._get(url)
         data = resp.json()
 
         ids = []
         for item in data.get("results", []):
-            try:
-                url_path = item["url"].rstrip("/")
-                pokemon_id = int(url_path.split("/")[-1])
-                ids.append(pokemon_id)
-            except (KeyError, ValueError):
+            if not isinstance(item, dict):
                 continue
+            pokemon_id = _extract_pokemon_id(item.get("url", ""))
+            if pokemon_id is not None:
+                ids.append(pokemon_id)
 
         return sorted(ids)
 
+    def _parse_refs(self, items: list[dict], key: str) -> list[str]:
+        names = []
+        for item in items:
+            name = _safe_get(item, key, "name")
+            if name:
+                names.append(name)
+        return names
+
     async def fetch_pokemon(self, pokemon_id: int) -> PokemonAPIModel:
-        """Fetch Pokemon by ID."""
+        """Fetch pokemon details by ID."""
         url = f"{BASE_URL}/pokemon/{pokemon_id}/"
         resp = await self._get(url)
         data = resp.json()
 
-        types = [
-            TypeRef(name=t.get("type", {}).get("name", ""))
-            for t in data.get("types", [])
-        ]
-        abilities = [
-            AbilityRef(name=a.get("ability", {}).get("name", ""))
-            for a in data.get("abilities", [])
-        ]
-        stats = [
-            StatRef(name=s.get("stat", {}).get("name", ""), base_stat=s.get("base_stat", 0))
-            for s in data.get("stats", [])
-        ]
+        type_names = self._parse_refs(data.get("types", []), "type")
+        types = [TypeRef(name=name) for name in type_names]
+
+        ability_names = self._parse_refs(data.get("abilities", []), "ability")
+        abilities = [AbilityRef(name=name) for name in ability_names]
+
+        stats = []
+        for item in data.get("stats", []):
+            name = _safe_get(item, "stat", "name")
+            if name:
+                stats.append(StatRef(name=name, base_stat=item.get("base_stat", 0)))
 
         return PokemonAPIModel(
             id=data["id"],
             name=data["name"],
-            height=data["height"],
-            weight=data["weight"],
-            base_experience=data["base_experience"],
+            height=data.get("height", 0),
+            weight=data.get("weight", 0),
+            base_experience=data.get("base_experience", 0),
             types=types,
             abilities=abilities,
             stats=stats,
         )
 
-    async def fetch_species(self, species_id: int) -> SpeciesAPIModel:
-        """Fetch species data including evolution chain URL."""
-        url = f"{BASE_URL}/pokemon-species/{species_id}/"
-        resp = await self._get(url)
-        data = resp.json()
 
-        evo_chain = data.get("evolution_chain", {})
-        evo_url = evo_chain.get("url") if isinstance(evo_chain, dict) else None
-
-        return SpeciesAPIModel(
-            id=data["id"],
-            name=data["name"],
-            evolution_chain_url=evo_url,
-        )
-
-    async def fetch_evolution_chain(self, chain_id: int) -> EvolutionChainAPIModel:
-        """Fetch evolution chain data."""
-        url = f"{BASE_URL}/evolution-chain/{chain_id}/"
-        resp = await self._get(url)
-        data = resp.json()
-
-        return EvolutionChainAPIModel(id=data["id"], chain=data.get("chain", {}))
-
-
-async def gather_limited(
-    coros: list[Coroutine[Any, Any, Any]],
-    concurrency: int,
-) -> list[Any]:
-    """Run coroutines with bounded concurrency."""
-    if not coros:
-        return []
-
-    sem = asyncio.Semaphore(max(1, concurrency))
-
-    async def _limited_run(coro: Coroutine[Any, Any, Any]) -> Any:
-        async with sem:
-            return await coro
-
-    return list(await asyncio.gather(*(_limited_run(c) for c in coros)))

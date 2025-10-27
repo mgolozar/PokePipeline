@@ -1,3 +1,4 @@
 {
-    "makefile.configureOnOpen": false
+    "makefile.configureOnOpen": false,
+    "python.defaultInterpreterPath": "C:\\Users\\mgolozar\\AppData\\Local\\Programs\\Python\\Python311\\python.exe"
 }

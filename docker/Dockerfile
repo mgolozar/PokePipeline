@@ -8,14 +8,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies
+# Copy Python dependencies file
 COPY pyproject.toml ./
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -e .[dev]
+RUN pip install --no-cache-dir --upgrade pip
 
 # Copy application code
 COPY pokepipeline/ ./pokepipeline/
 COPY migrations/ ./migrations/
+
+# Copy README if it exists
+COPY README.md* ./
+
+# Install the package in editable mode
+RUN pip install --no-cache-dir -e .[dev]
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \

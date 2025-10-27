@@ -1,4 +1,4 @@
-"""PokePipeline - A data pipeline for fetching and processing Pokémon data."""
+"""PokePipeline - A data pipeline for fetching and processing Pokemon data."""
 
 __version__ = "0.1.0"
 
