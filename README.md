@@ -1,8 +1,43 @@
 # PokéPipeline
 
-A data pipeline for fetching, transforming, and loading Pokémon data from the PokeAPI into a PostgreSQL database.
+A production-ready ETL pipeline that fetches Pokémon data from the PokeAPI, transforms it with enrichment and validation, and loads it into PostgreSQL. Includes an optional GraphQL API for querying the loaded data.
 
-## Quickstart
+## Architecture
+
+```
+Extract → Transform → Quality Check → Load
+   ↓           ↓            ↓          ↓
+PokeAPI    Normalize    Validate   PostgreSQL
+   ↓           ↓            ↓          ↓
+async      Enrich      Drop bad   Idempotent
+HTTP       DTOs        records     UPSERTs
+```
+
+The pipeline is organized into modular layers:
+- **extract/**: Async HTTP client with rate limiting and retries
+- **transform/**: Data mapping, normalization, and enrichment (BST, bulk index)
+- **quality/**: Validation checks to filter invalid records
+- **load/**: Idempotent database operations with schema auto-creation
+- **orchestrator/**: Coordinates the ETL pipeline with logging and metrics
+
+## Tech Stack
+
+- **Python 3.11+** with type hints
+- **SQLAlchemy 2.x** for ORM and migrations
+- **Typer** for CLI interface
+- **httpx** for async HTTP requests
+- **PostgreSQL** for data storage
+- **Pydantic v2** for data validation
+- **Strawberry** + **FastAPI** for GraphQL API
+- **Docker** for containerization
+
+## Setup & Run
+
+### Prerequisites
+
+- Python 3.11+
+- PostgreSQL 12+
+- Docker (optional)
 
 ### Installation
 
@@ -14,70 +49,91 @@ cd PokePipeline
 # Install dependencies
 make install
 # or
-pip install -e .
+pip install -e .[dev]
 
-# Copy environment file
+# Configure environment (optional)
 cp .env.example .env
 ```
 
-### Environment Configuration
+### Run the Pipeline
 
-Edit `.env` to customize settings:
-
+**Using CLI:**
 ```bash
-DATABASE_URL=postgresql+psycopg://postgres:postgres@db:5432/poke
-HTTP_CONCURRENCY=5
-RATE_LIMIT_PER_SEC=4
-TARGET_LIMIT=20
-ENABLE_EVOLUTION=false
+# Start PostgreSQL
+docker run -d --name poke-db -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=poke -p 5432:5432 postgres:15-alpine
+
+# Run pipeline
+make run
+# or
+python -m pokepipeline.cli --limit 20
 ```
 
-### Running the Pipeline
-
-**Option 1: Using Docker (Recommended)**
+**Using Docker:**
 ```bash
 make docker-up
 ```
 
-**Option 2: Using CLI (requires PostgreSQL running)**
-```bash
-# Start PostgreSQL first
-docker run -d --name poke-db -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=poke -p 5432:5432 postgres:15-alpine
+### GraphQL API (Optional)
 
-# Run the pipeline
-make run
-# or
-python -m pokepipeline.cli run
+```bash
+# Install GraphQL dependencies
+pip install -r requirements-graphql.txt
+
+# Set database URL (PowerShell)
+$env:DATABASE_URL="postgresql+psycopg2://postgres:postgres@localhost:5432/poke"
+
+# Run the API
+python scripts/graphql_min.py
 ```
+
+Access GraphiQL at http://localhost:8001/graphql
 
 ### Development
 
 ```bash
 # Run tests
 make test
+
+# Format and lint
+make fmt
+make lint
 ```
 
----
+## Key Design Choices
 
-# **Coding Challenge: Build a PokéPipeline**
+- **Modular Architecture**: Clean separation of extract, transform, quality, and load layers
+- **Type Safety**: Full type hints with Pydantic DTOs and SQLAlchemy ORM models
+- **Async I/O**: Concurrent API requests with rate limiting and timeout handling
+- **Idempotent Operations**: PostgreSQL UPSERTs ensure safe re-runs without duplicates
+- **Quality Gates**: Validation checks to drop incomplete or invalid records
+- **Structured Logging**: JSON logging with metrics for observability
+- **Schema Evolution**: Auto-creates missing tables on first run
 
-Welcome, future innovator\! At Aventa, we frequently build data pipelines for our clients in the insurance sector. This often involves fetching data from various sources (like REST APIs), transforming it, and loading it into different systems (like databases or exposing it via GraphQL). This challenge is designed to see your approach to such tasks.
+## Example Output
 
-# **Project Mission:**
+After running the pipeline, verify the loaded data:
 
-Your core task is to design and build a data pipeline that fetches data about Pokémon from the public PokeAPI (pokeapi.co), transforms this data in a meaningful way, and stores it in a SQL database.
+**Via PostgreSQL:**
+```sql
+SELECT name, base_stat_total, bulk_index 
+FROM pokemon 
+ORDER BY base_stat_total DESC 
+LIMIT 5;
+```
 
-This is an open-ended challenge. We're interested in seeing how you approach the problem and the choices you make. You can decide on the complexity and scope of your solution.
+**Via GraphQL:**
+```graphql
+query {
+  pokemons(limit: 10, order_by: "base_stat_total", desc_order: true) {
+    id
+    name
+    base_stat_total
+    bulk_index
+    height_m
+    weight_kg
+  }
+}
+```
 
-# **Core Requirements:**
-
-1. Data Extraction: Fetch data for at least 10-20 Pokémon from the PokeAPI. You can choose which specific data points you want to extract (e.g., name, types, abilities, stats, evolution chain, etc.).  
-2. Data Transformation & Mapping: This is a key part\! Transform the raw data from the API into a more structured format suitable for a relational database. Think about how you would map the often nested and varied API responses to your chosen database schema. Document your mapping decisions.  
-3. Data Loading: Store the transformed Pokémon data in a SQL database of your choice (e.g., SQLite, PostgreSQL). You'll need to define the database schema.  
-4. README.md: This is mandatory. Your README.md file should include:  
-   1. A clear description of your project.  
-   2. Instructions on how to set up and run your solution.  
-   3. An explanation of your design choices, especially regarding data transformation, mapping, and database schema.  
-   4. Any assumptions you made.  
-   5. A brief discussion of potential improvements or features you'd add if you had more time.
+ 
 

@@ -1,0 +1,4 @@
+fastapi
+uvicorn[standard]
+strawberry-graphql
+psycopg2-binary
