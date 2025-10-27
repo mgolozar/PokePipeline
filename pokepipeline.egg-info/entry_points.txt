@@ -1,0 +1,2 @@
+[console_scripts]
+pokepipeline = pokepipeline.cli:app
